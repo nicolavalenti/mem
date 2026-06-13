@@ -2,17 +2,18 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Nightly mem ingest — refresh memory files + vector recent Claude Code sessions.
+"""Nightly mem ingest — refresh memory files + vector recent sessions from ALL
+harnesses: Claude Code, Codex, and Pi.
 
-Run by launchd (com.mem.ingest) at 06:30. Unlike cron, launchd's
-StartCalendarInterval runs a MISSED job when the Mac next wakes / logs in, so it
-still runs if the machine was asleep or off at 6:30.
+Run by launchd (com.mem.ingest) at 06:30 with catch-up-on-wake. Pure stdlib:
+extracts the readable turns from each harness's transcript format into
+~/.mem/sessions/*.md, then shells out to `mem` to embed them (incremental —
+unchanged files are skipped). Absolute paths because launchd starts bare.
 
-Pure stdlib: extracts the readable turns from recent session transcripts into
-~/.mem/sessions/*.md, then shells out to the `mem` CLI to embed everything
-(incremental — unchanged files are skipped). Absolute paths throughout because
-launchd starts with a bare environment.
+  uv run nightly_ingest.py              # last 3 days (the nightly default)
+  uv run nightly_ingest.py --days 3650  # one-time full backfill of all history
 """
+import argparse
 import json
 import subprocess
 import time
@@ -22,66 +23,132 @@ HOME = Path.home()
 UV = str(HOME / ".local" / "bin" / "uv")
 MEM = str(HOME / "Projects" / "mem" / "mem.py")
 MEMORY_GLOB = str(HOME / ".claude" / "projects" / "-Users-nickvalenti" / "memory" / "*.md")
-PROJECTS = HOME / ".claude" / "projects"
 SESSIONS_DIR = HOME / ".mem" / "sessions"
-RECENT_DAYS = 3
-MIN_TURNS = 4   # skip trivial/empty sessions
+MIN_TURNS = 4
+MAX_TURN_CHARS = 2000
 
 
 def run_mem(args: list[str]) -> None:
     subprocess.run([UV, "run", MEM, *args], check=False)
 
 
-def extract_session(jsonl: Path) -> list[tuple[str, str]]:
+def _lines(path: Path):
+    try:
+        with open(path, errors="replace") as f:
+            yield from f
+    except OSError:
+        return
+
+
+def _json(line: str):
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        return None
+
+
+def _texts(content) -> list[str]:
+    """Readable text out of a content field (str, or list of blocks with .text)."""
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        return [b["text"] for b in content
+                if isinstance(b, dict) and isinstance(b.get("text"), str) and b["text"].strip()]
+    return []
+
+
+# ── per-harness transcript extractors → [(role, text), …] ──────────────────
+def extract_claude(jsonl: Path) -> list[tuple[str, str]]:
     turns = []
-    with open(jsonl, errors="replace") as f:
-        for line in f:
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            t = rec.get("type")
-            msg = rec.get("message") or {}
-            if t == "user":
-                c = msg.get("content")
-                if isinstance(c, str) and c.strip() and not c.lstrip().startswith("<"):
-                    turns.append(("User", c.strip()[:2000]))
-            elif t == "assistant":
-                for blk in (msg.get("content") or []):
-                    if isinstance(blk, dict) and blk.get("type") == "text" and blk.get("text", "").strip():
-                        turns.append(("Assistant", blk["text"].strip()[:2000]))
+    for line in _lines(jsonl):
+        rec = _json(line)
+        if not rec:
+            continue
+        t = rec.get("type")
+        msg = rec.get("message") or {}
+        if t == "user":
+            c = msg.get("content")
+            if isinstance(c, str) and c.strip() and not c.lstrip().startswith("<"):
+                turns.append(("User", c.strip()))
+        elif t == "assistant":
+            for txt in _texts(msg.get("content")):
+                turns.append(("Assistant", txt.strip()))
     return turns
 
 
-def main():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nightly ingest")
+def extract_pi(jsonl: Path) -> list[tuple[str, str]]:
+    turns = []
+    for line in _lines(jsonl):
+        rec = _json(line)
+        if not rec or rec.get("type") != "message":
+            continue
+        m = rec.get("message") or {}
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = "\n".join(_texts(m.get("content"))).strip()
+        if text and not text.startswith("<"):
+            turns.append((role.capitalize(), text))
+    return turns
 
-    # 1) refresh the memory files
+
+def extract_codex(jsonl: Path) -> list[tuple[str, str]]:
+    turns = []
+    for line in _lines(jsonl):
+        rec = _json(line)
+        if not rec or rec.get("type") != "response_item":
+            continue
+        p = rec.get("payload") or {}
+        if p.get("type") != "message":
+            continue
+        role = p.get("role")
+        if role not in ("user", "assistant"):   # skip 'developer' (system) blobs
+            continue
+        text = "\n".join(_texts(p.get("content"))).strip()
+        if text and not text.startswith("<"):
+            turns.append((role.capitalize(), text))
+    return turns
+
+
+HARNESSES = [
+    ("claude", HOME / ".claude" / "projects", extract_claude),
+    ("pi", HOME / ".pi" / "agent" / "sessions", extract_pi),
+    ("codex", HOME / ".codex" / "sessions", extract_codex),
+]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--days", type=int, default=3,
+                    help="ingest sessions modified within N days (use a big N to backfill)")
+    args = ap.parse_args()
+
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nightly ingest (last {args.days}d)")
     run_mem(["ingest", MEMORY_GLOB, "--kind", "memory"])
 
-    # 2) extract recent session transcripts → markdown (stable name per session)
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    cutoff = time.time() - RECENT_DAYS * 86400
-    n = 0
-    for jsonl in PROJECTS.glob("*/*.jsonl"):
-        try:
-            if jsonl.stat().st_mtime < cutoff:
+    cutoff = time.time() - args.days * 86400
+    counts: dict[str, int] = {}
+    for harness, root, extractor in HARNESSES:
+        if not root.exists():
+            continue
+        for jsonl in root.rglob("*.jsonl"):
+            try:
+                if jsonl.stat().st_mtime < cutoff:
+                    continue
+            except OSError:
                 continue
-        except OSError:
-            continue
-        turns = extract_session(jsonl)
-        if len(turns) < MIN_TURNS:
-            continue
-        proj = jsonl.parent.name
-        out = SESSIONS_DIR / f"{proj}__{jsonl.stem[:8]}.md"
-        lines = [f"# Session — {proj} ({jsonl.stem[:8]})", ""]
-        for role, txt in turns:
-            lines.append(f"## {role}\n{txt}\n")
-        out.write_text("\n".join(lines))
-        n += 1
-    print(f"extracted {n} recent session(s) (last {RECENT_DAYS}d) → {SESSIONS_DIR}")
-
-    # 3) ingest the sessions (incremental: only changed files re-embed)
+            turns = extractor(jsonl)
+            if len(turns) < MIN_TURNS:
+                continue
+            name = (f"{jsonl.parent.name}__{jsonl.stem[:8]}.md" if harness == "claude"
+                    else f"{harness}__{jsonl.stem}.md")
+            body = [f"# {harness} session — {jsonl.stem[:40]}", ""]
+            for role, txt in turns:
+                body.append(f"## {role}\n{txt[:MAX_TURN_CHARS]}\n")
+            (SESSIONS_DIR / name).write_text("\n".join(body))
+            counts[harness] = counts.get(harness, 0) + 1
+    print("extracted:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "(none)")
     run_mem(["ingest", str(SESSIONS_DIR / "*.md"), "--kind", "session"])
 
 
