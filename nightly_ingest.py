@@ -141,9 +141,9 @@ def main():
             turns = extractor(jsonl)
             if len(turns) < MIN_TURNS:
                 continue
-            name = (f"{jsonl.parent.name}__{jsonl.stem[:8]}.md" if harness == "claude"
-                    else f"{harness}__{jsonl.stem}.md")
-            body = [f"# {harness} session — {jsonl.stem[:40]}", ""]
+            name = f"{harness}__{jsonl.stem}.md"   # full stem → unique, no collisions
+            label = jsonl.parent.name if harness == "claude" else jsonl.stem
+            body = [f"# {harness} session — {label[:60]}", ""]
             for role, txt in turns:
                 body.append(f"## {role}\n{txt[:MAX_TURN_CHARS]}\n")
             (SESSIONS_DIR / name).write_text("\n".join(body))
