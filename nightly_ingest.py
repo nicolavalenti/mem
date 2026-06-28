@@ -24,12 +24,20 @@ UV = str(HOME / ".local" / "bin" / "uv")
 MEM = str(HOME / "Projects" / "mem" / "mem.py")
 MEMORY_GLOB = str(HOME / ".claude" / "projects" / "-Users-nickvalenti" / "memory" / "*.md")
 SESSIONS_DIR = HOME / ".mem" / "sessions"
+# Success stamp: its mtime advances ONLY after a clean ingest, so it is the
+# honest freshness signal — unlike ingest.log, whose mtime moves the instant the
+# SessionStart hook echoes its header, even on a run that then crashes. The numen
+# dashboard reads THIS for mem-ingest freshness (see numen CLAUDE.md).
+STAMP = HOME / ".mem" / "ingest.ok"
 MIN_TURNS = 4
 MAX_TURN_CHARS = 2000
 
 
-def run_mem(args: list[str]) -> None:
-    subprocess.run([UV, "run", MEM, *args], check=False)
+def run_mem(args: list[str]) -> bool:
+    """Run a mem subcommand; return True only on a clean (exit 0) run. mem.py
+    has no try/except around its command fns, so an embed/db failure crashes to
+    a non-zero exit — a reliable hard-failure signal worth recording."""
+    return subprocess.run([UV, "run", MEM, *args], check=False).returncode == 0
 
 
 def _lines(path: Path):
@@ -124,7 +132,7 @@ def main():
     args = ap.parse_args()
 
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] nightly ingest (last {args.days}d)")
-    run_mem(["ingest", MEMORY_GLOB, "--kind", "memory"])
+    ok = run_mem(["ingest", MEMORY_GLOB, "--kind", "memory"])
 
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     cutoff = time.time() - args.days * 86400
@@ -149,7 +157,16 @@ def main():
             (SESSIONS_DIR / name).write_text("\n".join(body))
             counts[harness] = counts.get(harness, 0) + 1
     print("extracted:", ", ".join(f"{k}={v}" for k, v in counts.items()) or "(none)")
-    run_mem(["ingest", str(SESSIONS_DIR / "*.md"), "--kind", "session"])
+    ok = run_mem(["ingest", str(SESSIONS_DIR / "*.md"), "--kind", "session"]) and ok
+
+    if ok:
+        STAMP.write_text(time.strftime("%Y-%m-%dT%H:%M:%S"))   # advances mtime only on a clean run
+        print("ok — success stamp updated")
+    else:
+        # Don't touch the stamp: leave its mtime stale so freshness/status can see
+        # the failure. Exit non-zero so a cron run records the real exit too.
+        print("ingest reported errors — success stamp NOT updated")
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
