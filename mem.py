@@ -143,16 +143,39 @@ def cmd_ingest(a):
     print(f"ingested {n_files} changed file(s), {n_chunks} chunk(s)")
 
 
-def cmd_query(a):
+# The course corpus (kind=skool-aiautomations) is ~72% of the store and floods
+# every query — and it dates fast (esp. the AI content), so most of it is stale
+# within months. Excluded from recall by DEFAULT everywhere (CLI, MCP, every
+# harness); opt back in per-query with include_courses / --courses.
+DEFAULT_EXCLUDE_KINDS = {"skool-aiautomations"}
+
+def search(query: str, k: int = 5, max_distance: float = DEFAULT_MAX_DISTANCE,
+           include_courses: bool = False) -> list[dict]:
+    """Semantic search, single source of truth for the CLI and the MCP tool.
+    sqlite-vec applies its KNN `k` BEFORE any kind filter, so a store that's 72%
+    courses would starve every other kind if we filtered in SQL. Instead over-fetch
+    at the vector layer, drop the excluded kinds, and keep the top k."""
     db = connect()
+    exclude = set() if include_courses else set(DEFAULT_EXCLUDE_KINDS)
+    fetch = k if not exclude else min(600, max(k * 30, 250))
     rows = db.execute(
         """SELECT items.text, items.source, items.kind, vec_items.distance
              FROM vec_items JOIN items ON items.id = vec_items.rowid
             WHERE vec_items.embedding MATCH ? AND k = ?
             ORDER BY vec_items.distance""",
-        (_ser(embed([a.query])[0]), a.k)).fetchall()
-    results = [{"text": t, "source": s, "kind": kd, "score": round(1 - d, 3)}
-               for (t, s, kd, d) in rows if d <= a.max_distance]
+        (_ser(embed([query])[0]), fetch)).fetchall()
+    out = []
+    for (t, s, kd, d) in rows:
+        if d > max_distance or kd in exclude:
+            continue
+        out.append({"text": t, "source": s, "kind": kd, "score": round(1 - d, 3)})
+        if len(out) >= k:
+            break
+    return out
+
+
+def cmd_query(a):
+    results = search(a.query, a.k, a.max_distance, include_courses=a.courses)
     if a.json:
         print(json.dumps(results, indent=2))
     elif not results:
@@ -194,6 +217,8 @@ def main():
     p = sub.add_parser("query", help="semantic search")
     p.add_argument("query")
     p.add_argument("-k", type=int, default=5)
+    p.add_argument("--courses", action="store_true",
+                   help="include the course corpus (kind=skool-aiautomations, excluded by default)")
     p.add_argument("--max-distance", type=float, default=DEFAULT_MAX_DISTANCE,
                    dest="max_distance")
     p.add_argument("--json", action="store_true")

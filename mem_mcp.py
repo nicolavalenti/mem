@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from mem import _insert, _ser, connect, embed  # noqa: E402
+from mem import _insert, connect, embed, search  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP
 
@@ -24,19 +24,14 @@ mcp = FastMCP("mem")
 
 
 @mcp.tool()
-def memory_search(query: str, k: int = 5, max_distance: float = 0.55) -> str:
+def memory_search(query: str, k: int = 5, max_distance: float = 0.55,
+                  include_courses: bool = False) -> str:
     """Semantic search of Nick's local cross-harness memory. Call this BEFORE
     answering a recall/context question or web-searching — it's free and local.
-    Returns the most relevant snippets with their source and a similarity score."""
-    db = connect()
-    rows = db.execute(
-        """SELECT items.text, items.source, items.kind, vec_items.distance
-             FROM vec_items JOIN items ON items.id = vec_items.rowid
-            WHERE vec_items.embedding MATCH ? AND k = ?
-            ORDER BY vec_items.distance""",
-        (_ser(embed([query])[0]), k)).fetchall()
-    hits = [{"text": t, "source": s, "kind": kd, "score": round(1 - d, 3)}
-            for (t, s, kd, d) in rows if d <= max_distance]
+    Returns the most relevant snippets with their source and a similarity score.
+    The course corpus (skool-aiautomations, ~72% of the store and quick to date)
+    is excluded by default; pass include_courses=True to search it too."""
+    hits = search(query, k, max_distance, include_courses=include_courses)
     return json.dumps(hits, indent=2) if hits else "(nothing relevant in memory)"
 
 
