@@ -22,7 +22,10 @@ from pathlib import Path
 HOME = Path.home()
 UV = str(HOME / ".local" / "bin" / "uv")
 MEM = str(HOME / "Projects" / "mem" / "mem.py")
-MEMORY_GLOB = str(HOME / ".claude" / "projects" / "-Users-nickvalenti" / "memory" / "*.md")
+# Claude Code names each project dir after its absolute path with "/" -> "-",
+# so the dir for $HOME is derivable rather than hardcoded.
+PROJECT_SLUG = str(HOME).replace("/", "-")
+MEMORY_GLOB = str(HOME / ".claude" / "projects" / PROJECT_SLUG / "memory" / "*.md")
 SESSIONS_DIR = HOME / ".mem" / "sessions"
 # Success stamp: its mtime advances ONLY after a clean ingest, so it is the
 # honest freshness signal — unlike ingest.log, whose mtime moves the instant the

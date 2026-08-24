@@ -7,7 +7,7 @@
 as the CLI — it imports mem.py so there is exactly one implementation.
 
 Register:
-  claude mcp add mem --scope user -- uv run /Users/nickvalenti/Projects/mem/mem_mcp.py
+  claude mcp add mem --scope user -- uv run /abs/path/to/mem_mcp.py
   # Codex: add [mcp_servers.mem] to ~/.codex/config.toml
 """
 import hashlib

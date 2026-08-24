@@ -1,15 +1,15 @@
 # mem
 
-Local, cross-harness semantic memory. One SQLite file + a local CPU embedder — **no server, no cloud**. Any agent harness (Claude Code, Codex, Pi) or plain shell can read and write the **same** store, via a CLI or an MCP server.
+Local, cross-harness semantic memory. One SQLite file plus a local CPU embedder, with **no server and no cloud**. Any agent harness (Claude Code, Codex, Pi) or plain shell can read and write the **same** store, via a CLI or an MCP server.
 
 ## Why
 
-Each harness has its own memory, or none. `mem` gives them one shared brain that never leaves the machine. The tool owns the embedder, so every caller writes into the same vector space — callers send text, never vectors.
+Each harness has its own memory, or none. `mem` gives them one shared brain that never leaves the machine. The tool owns the embedder, so every caller writes into the same vector space, and callers send text, never vectors.
 
 ## Stack
 
-- [`sqlite-vec`](https://github.com/asg017/sqlite-vec) — vector search inside SQLite
-- [`fastembed`](https://github.com/qdrant/fastembed) — `BAAI/bge-small-en-v1.5` (384-dim, ONNX/CPU, ~100MB one-time download)
+- [`sqlite-vec`](https://github.com/asg017/sqlite-vec): vector search inside SQLite
+- [`fastembed`](https://github.com/qdrant/fastembed): `BAAI/bge-small-en-v1.5` (384-dim, ONNX/CPU, ~100MB one-time download)
 - Store at `~/.mem/store.db` (override with `MEM_DB`)
 
 Requires [`uv`](https://github.com/astral-sh/uv). Both scripts are self-contained PEP-723 (deps declared inline); `uv` provisions a pinned Python and the deps on first run.

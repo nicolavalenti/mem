@@ -12,10 +12,14 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const execFileAsync = promisify(execFile);
-const UV = "/Users/nickvalenti/.local/bin/uv";
-const MEM = "/Users/nickvalenti/Projects/mem/mem.py";
+// Absolute so the extension does not depend on PATH. Override either with an
+// env var if uv or the repo lives somewhere else.
+const UV = process.env.MEM_UV ?? join(homedir(), ".local", "bin", "uv");
+const MEM = process.env.MEM_SCRIPT ?? join(homedir(), "Projects", "mem", "mem.py");
 
 async function runMem(args: string[]): Promise<string> {
 	const { stdout } = await execFileAsync(UV, ["run", MEM, ...args], {
