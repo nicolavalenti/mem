@@ -150,14 +150,29 @@ def cmd_ingest(a):
 DEFAULT_EXCLUDE_KINDS = {"skool-aiautomations"}
 
 def search(query: str, k: int = 5, max_distance: float = DEFAULT_MAX_DISTANCE,
-           include_courses: bool = False) -> list[dict]:
+           include_courses: bool = False, only_kinds=None) -> list[dict]:
     """Semantic search, single source of truth for the CLI and the MCP tool.
     sqlite-vec applies its KNN `k` BEFORE any kind filter, so a store that's 72%
     courses would starve every other kind if we filtered in SQL. Instead over-fetch
-    at the vector layer, drop the excluded kinds, and keep the top k."""
+    at the vector layer, drop the excluded kinds, and keep the top k.
+
+    `only_kinds` narrows to a set of kinds and needs a much deeper over-fetch than
+    the course exclusion does, because it inverts the problem: instead of dropping
+    one dominant kind, it keeps one rare one. Measured 2026-08-09 — asking "what
+    was the problem with the caching part" put the relevant `handoff` at rank 232
+    of 387 (score 0.703) behind a wall of `session` chunks scoring 0.70-0.78. The
+    top-5 default therefore returned no handoff at all, and no amount of re-ranking
+    downstream can fix a hit that was never fetched. Scores in this store cluster
+    tightly, so rank distance is large even when score distance is not."""
     db = connect()
     exclude = set() if include_courses else set(DEFAULT_EXCLUDE_KINDS)
-    fetch = k if not exclude else min(600, max(k * 30, 250))
+    only = set(only_kinds) if only_kinds else None
+    if only:
+        fetch = min(4000, max(k * 200, 1500))
+    elif exclude:
+        fetch = min(600, max(k * 30, 250))
+    else:
+        fetch = k
     rows = db.execute(
         """SELECT items.text, items.source, items.kind, vec_items.distance
              FROM vec_items JOIN items ON items.id = vec_items.rowid
@@ -168,6 +183,8 @@ def search(query: str, k: int = 5, max_distance: float = DEFAULT_MAX_DISTANCE,
     for (t, s, kd, d) in rows:
         if d > max_distance or kd in exclude:
             continue
+        if only and kd not in only:
+            continue
         out.append({"text": t, "source": s, "kind": kd, "score": round(1 - d, 3)})
         if len(out) >= k:
             break
@@ -175,7 +192,9 @@ def search(query: str, k: int = 5, max_distance: float = DEFAULT_MAX_DISTANCE,
 
 
 def cmd_query(a):
-    results = search(a.query, a.k, a.max_distance, include_courses=a.courses)
+    only = [x.strip() for x in (a.only_kind or "").split(",") if x.strip()] or None
+    results = search(a.query, a.k, a.max_distance, include_courses=a.courses,
+                     only_kinds=only)
     if a.json:
         print(json.dumps(results, indent=2))
     elif not results:
@@ -219,6 +238,10 @@ def main():
     p.add_argument("-k", type=int, default=5)
     p.add_argument("--courses", action="store_true",
                    help="include the course corpus (kind=skool-aiautomations, excluded by default)")
+    p.add_argument("--only-kind", metavar="K[,K2]",
+                   help="restrict results to these kinds (e.g. handoff). Uses a "
+                        "much deeper vector over-fetch, since a rare kind can sit "
+                        "hundreds of ranks down behind a common one.")
     p.add_argument("--max-distance", type=float, default=DEFAULT_MAX_DISTANCE,
                    dest="max_distance")
     p.add_argument("--json", action="store_true")
