@@ -1,0 +1,11 @@
+#!/bin/bash
+# Wrapper for com.mem.idle. Exists for the same reason numen's bin/ wrappers do:
+# macOS names a background agent in Login Items after the basename of the
+# executable it launches, so pointing the plist straight at `uv` would show an
+# anonymous "uv" row. `exec` preserves the PID and cmdline, so pkill still works.
+#
+# launchd starts bare — no login shell, no ~/.zshrc — hence absolute paths.
+# `claude -p` authenticates from the Keychain, not from env, so unlike numen's
+# server wrapper this one has no .env.keys to source.
+exec /Users/nickvalenti/.local/bin/uv run \
+  /Users/nickvalenti/Projects/mem/idle_checkpoint.py "$@"
